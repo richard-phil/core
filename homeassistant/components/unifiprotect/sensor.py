@@ -27,14 +27,13 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     DATA_BYTES,
-    DATA_RATE_BYTES_PER_SECOND,
-    DATA_RATE_MEGABITS_PER_SECOND,
     ELECTRIC_POTENTIAL_VOLT,
     LIGHT_LUX,
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     TEMP_CELSIUS,
     TIME_SECONDS,
+    UnitOfDataRate,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -55,7 +54,6 @@ from .utils import async_dispatch_id as _ufpd, async_get_light_motion_current
 _LOGGER = logging.getLogger(__name__)
 OBJECT_TYPE_NONE = "none"
 DEVICE_CLASS_DETECTION = "unifiprotect__detection"
-DEVICE_CLASS_LICENSE_PLATE = "unifiprotect__license_plate"
 
 
 @dataclass
@@ -141,7 +139,8 @@ ALL_DEVICES_SENSORS: tuple[ProtectSensorEntityDescription, ...] = (
     ProtectSensorEntityDescription(
         key="phy_rate",
         name="Link Speed",
-        native_unit_of_measurement=DATA_RATE_MEGABITS_PER_SECOND,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         state_class=SensorStateClass.MEASUREMENT,
@@ -181,7 +180,8 @@ CAMERA_SENSORS: tuple[ProtectSensorEntityDescription, ...] = (
     ProtectSensorEntityDescription(
         key="write_rate",
         name="Disk Write Rate",
-        native_unit_of_measurement=DATA_RATE_BYTES_PER_SECOND,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.BYTES_PER_SECOND,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
         ufp_value="stats.storage.rate_per_second",
@@ -534,11 +534,11 @@ EVENT_SENSORS: tuple[ProtectSensorEventEntityDescription, ...] = (
         key="smart_obj_licenseplate",
         name="License Plate Detected",
         icon="mdi:car",
-        device_class=DEVICE_CLASS_LICENSE_PLATE,
+        translation_key="license_plate",
+        ufp_smart_type=SmartDetectObjectType.LICENSE_PLATE,
         ufp_value="is_smart_detected",
         ufp_required_field="can_detect_license_plate",
         ufp_event_obj="last_smart_detect_event",
-        ufp_smart_type=SmartDetectObjectType.LICENSE_PLATE,
     ),
 )
 
@@ -772,20 +772,29 @@ class ProtectEventSensor(EventEntityMixin, SensorEntity):
     def _async_update_device_from_protect(self, device: ProtectModelWithId) -> None:
         # do not call ProtectDeviceSensor method since we want event to get value here
         EventEntityMixin._async_update_device_from_protect(self, device)
-        if (
+        is_on = self.entity_description.get_is_on(device)
+        is_license_plate = (
             self.entity_description.ufp_smart_type
             == SmartDetectObjectType.LICENSE_PLATE
+        )
+        if (
+            not is_on
+            or self._event is None
+            or (
+                is_license_plate
+                and (
+                    self._event.metadata is None
+                    or self._event.metadata.license_plate is None
+                )
+            )
         ):
-            if (
-                self._event is None
-                or self._event.metadata is None
-                or self._event.metadata.license_plate is None
-            ):
-                self._attr_native_value = OBJECT_TYPE_NONE
-            else:
-                self._attr_native_value = self._event.metadata.license_plate.name
+            self._attr_native_value = OBJECT_TYPE_NONE
+            self._event = None
+            self._attr_extra_state_attributes = {}
+            return
+
+        if is_license_plate:
+            # type verified above
+            self._attr_native_value = self._event.metadata.license_plate.name  # type: ignore[union-attr]
         else:
-            if self._event is None:
-                self._attr_native_value = OBJECT_TYPE_NONE
-            else:
-                self._attr_native_value = self._event.smart_detect_types[0].value
+            self._attr_native_value = self._event.smart_detect_types[0].value
